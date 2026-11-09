@@ -653,7 +653,7 @@ The intention is to understand the problem, establish measurable improvements, a
 
 ## 10. Acknowledgements and Development Notes
 
-This baseline was developed with AI assistance (Muse), including assistance during dataset analysis and the exploration of image-processing approaches.
+Note: This project used AI assistance (Muse) for documentation and idea and structure development. The code was written from scratch for this project, using the public OpenCV AP
 
 The implementation was written from scratch for this project using Python and the public OpenCV API.
 
