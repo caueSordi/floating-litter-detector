@@ -159,6 +159,45 @@ Measures how many annotated litter objects were successfully detected.
 
 These metrics provide a quantitative way to evaluate improvements instead of relying exclusively on visual inspection.
 
+## 2.6. Water segmentation and water-relative litter detection
+
+Detecting litter with fixed color rules fails on water surfaces: the water itself is saturated (blue, green or brown) and changes with sky reflections, so color thresholds flag the water as candidate litter. The pipeline therefore works in two stages: first it finds the water, then it looks for what differs from *that* water.
+
+### 2.6.1. Water segmentation (`src/water.py`)
+
+Water is segmented either from a manually drawn polygon or automatically with GrabCut. In automatic mode, the central region is assumed to be water and the image corners that differ most in color from the center are used as background seeds. The raw result is cleaned with morphological closing and by keeping the largest connected component.
+
+![Water segmentation: overlay, initial GrabCut labels, raw GrabCut result and final water mask](docs/images/water_segmentation_GOPR1767.jpg)
+
+*Panels: (1) water overlay, (2) initial GrabCut labels, (3) raw GrabCut result, (4) final water mask. The ball and the white object appear as black holes inside the water mask, which is a useful litter cue.*
+
+The automatic segmentation is a heuristic and must be inspected visually. For difficult scenes, pass a manual polygon through `WATER_POLYGONS` in `run_batch.py`.
+
+### 2.6.2. Litter as deviation from the local water color (`method="anomaly"`)
+
+Inside the water region, `detect_boxes` estimates the expected water color locally (normalized Gaussian blur over water pixels only) and measures how far each pixel is from it in LAB space. Litter is whatever deviates from that estimate, plus the holes in the water mask.
+
+![Distance map: how far each pixel is from the local water color](docs/images/anomaly_dist_map_GOPR1767.jpg)
+
+*Distance map (blue = close to the water color, red = far). The ball, the white object and the bags stand out clearly, while the water texture stays low. The dock and the area outside the water are also red, but they are excluded by the water mask.*
+
+Additional safeguards:
+
+- **Iterative background estimate:** anomalous pixels are excluded and the background is recomputed, so litter does not contaminate its own background.
+- **Robust threshold:** median + k·MAD of the distances over the water (`anomaly_k`, with a floor of `anomaly_min_dist`).
+- **Shadow handling:** pixels darker than the water weigh less, and very dark bands (shade over the water) are ignored.
+- **Edge margin:** anomalies near the water boundary (dock shadows, ripples) are discarded; holes are always kept.
+- **Shape filtering:** area, aspect ratio (including the rotated bounding rectangle, which rejects thin slanted strips), extent and solidity.
+- **Splitting touching objects:** non-convex blobs are separated with a distance-transform watershed.
+
+The original absolute-color method remains available with `detect_boxes(img, method="color")` for comparison.
+
+![Detection dashboard: final detections, valid region, water anomaly, holes, grouped candidates and shape analysis](docs/images/litter_detection_GOPR1767.jpg)
+
+*Diagnostic dashboard: (1) final detections, (2) valid water region, (3) water anomaly mask, (4) holes in the water mask, (5) grouped candidates, (6) contour and shape analysis.*
+
+**Known limitations:** touching objects can still be reported as a single box (the litter cluster in the example), small ripples and leaves can produce small false positives, and litter touching the water edge is hard to detect because segmentation leaves it outside the water.
+
 ---
 
 ## 3. Project Architecture
