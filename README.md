@@ -2,9 +2,9 @@
 
 **A classical computer-vision baseline for detecting, locating, and counting floating litter on water surfaces using Python and OpenCV — without neural-network training.**
 
-\<p align="center">
-&#x20; \<em>An interpretable and reproducible starting point for aquatic litter detection.\</em>
-\</p>
+<p align="center">
+  <em>An interpretable and reproducible starting point for aquatic litter detection.</em>
+</p>
 
 ---
 
@@ -16,14 +16,18 @@ However, detecting litter in aquatic environments is a challenging computer-visi
 
 Floating litter also varies considerably in appearance. A plastic bag, a bottle, a food wrapper, and a small plastic fragment may have completely different shapes, colors, and dimensions.
 
-This project explores a first solution to that problem using **classical image processing techniques**, without relying on deep learning or neural-network training.
+This project explores a solution to that problem using **classical image processing techniques**, without relying on deep learning or neural-network training.
 
 The current implementation uses:
 
-- HSV color-space segmentation.
+- HSV color-space segmentation (baseline method).
+- Water-region segmentation using manual polygons and GrabCut.
+- LAB color-space analysis.
+- Local background estimation and anomaly detection.
 - Morphological image processing.
 - Contour detection and geometric filtering.
-- Bounding-box generation and merging.
+- Distance-transform watershed for separating touching objects.
+- Bounding-box generation and grouping.
 - Ground-truth comparison using Intersection over Union (IoU).
 - Precision, recall, and detection error analysis.
 
@@ -33,28 +37,35 @@ The project is designed to make both successful detections and failure cases obs
 
 ## 2. Current Approach
 
-The detector processes individual images and attempts to identify candidate litter regions based primarily on their color and geometric properties.
+The detector processes individual images and attempts to identify candidate litter regions based on their relationship with the surrounding water and their geometric properties.
 
-The pipeline consists of the following stages:
+Two detection methods are currently available:
 
-### 2.1. Image preprocessing and HSV segmentation
+- **Anomaly detection:** estimates the local appearance of water and identifies regions that deviate from it.
+- **Color-based detection:** uses fixed HSV thresholds to identify bright, relatively unsaturated regions.
 
-The input image is converted from BGR to HSV color space.
+The anomaly-based method is the current primary approach, while the original HSV implementation is maintained as a baseline for comparison.
+
+### 2.1. Image preprocessing and HSV segmentation (baseline)
+
+The original detection method converts the input image from BGR to HSV color space.
 
 HSV separates color information from brightness, making it possible to isolate bright and relatively unsaturated regions.
 
-The current segmentation thresholds are:
+The original segmentation thresholds are:
 
-| Channel        | Threshold | Purpose                       |
-| -------------- | --------- | ----------------------------- |
-| V (Value)      | ≥ 180     | Select bright regions         |
-| S (Saturation) | ≤ 60      | Select low-saturation regions |
+| Channel | Threshold | Purpose |
+|---|---|---|
+| V (Value) | ≥ 180 | Select bright regions |
+| S (Saturation) | ≤ 60 | Select low-saturation regions |
 
 The resulting binary mask highlights pixels that satisfy both conditions.
 
 This approach is intended to identify pale litter against darker water.
 
 However, reflections and glare can exhibit similar color characteristics, making them difficult to distinguish using color information alone.
+
+This method remains available through `detect_boxes(img, method="color")`.
 
 ### 2.2. Morphological processing
 
@@ -77,11 +88,11 @@ Each extracted contour represents a candidate region that may correspond to floa
 
 To reduce obvious false detections, the algorithm applies several geometric filters:
 
-| Filter        | Current threshold         | Purpose                                    |
-| ------------- | ------------------------- | ------------------------------------------ |
-| Minimum area  | 100 px²                   | Remove small noise                         |
-| Maximum area  | 10% of image area         | Reject excessively large regions           |
-| Aspect ratio  | ≤ 4                       | Reject excessively elongated regions       |
+| Filter | Current threshold | Purpose |
+|---|---|---|
+| Minimum area | 100 px² | Remove small noise |
+| Maximum area | 10% of image area | Reject excessively large regions |
+| Aspect ratio | ≤ 4 | Reject excessively elongated regions |
 | Image borders | Must not touch the border | Reject border-related structures and glare |
 
 The remaining contours are converted into bounding boxes.
@@ -101,17 +112,13 @@ Where:
 - `w`: bounding-box width.
 - `h`: bounding-box height.
 
-The current implementation also merges bounding boxes that are fully contained within another bounding box.
+The implementation includes bounding-box grouping and merging to reduce duplicated detections when a single object is fragmented by segmentation gaps.
 
-This helps prevent some duplicated detections when a single object is fragmented by dark folds or internal segmentation gaps.
-
-However, this strategy is still limited.
-
-Reflections and irregular object boundaries can generate multiple partially overlapping or disconnected contours that are not fully contained within one another.
+However, reflections and irregular object boundaries can still generate multiple partially overlapping or disconnected contours.
 
 As a result, the same physical object may still receive two or more bounding boxes.
 
-Improving object grouping is one of the main goals of future development.
+Improving object grouping remains an important development objective.
 
 ### 2.5. Ground-truth evaluation
 
@@ -121,15 +128,15 @@ The evaluation module calculates Intersection over Union (IoU) between predicted
 
 IoU measures the overlap between two bounding boxes:
 
-[
-IoU = \frac{|B\_{pred} \cap B\_{gt}|}{|B\_{pred} \cup B\_{gt}|}
-]
+\[
+IoU = \frac{|B_{pred} \cap B_{gt}|}{|B_{pred} \cup B_{gt}|}
+\]
 
 A detection is considered a match when:
 
-[
+\[
 IoU \geq 0.5
-]
+\]
 
 Each ground-truth object can be matched to at most one prediction.
 
@@ -143,39 +150,62 @@ From these values, the following metrics are calculated:
 
 **Precision**
 
-[
+\[
 Precision = \frac{TP}{TP+FP}
-]
+\]
 
 Measures how many predicted detections are correct.
 
 **Recall**
 
-[
+\[
 Recall = \frac{TP}{TP+FN}
-]
+\]
 
 Measures how many annotated litter objects were successfully detected.
 
 These metrics provide a quantitative way to evaluate improvements instead of relying exclusively on visual inspection.
 
-## 2.6. Water segmentation and water-relative litter detection
+### 2.6. Water segmentation and water-relative litter detection
 
-Detecting litter with fixed color rules fails on water surfaces: the water itself is saturated (blue, green or brown) and changes with sky reflections, so color thresholds flag the water as candidate litter. The pipeline therefore works in two stages: first it finds the water, then it looks for what differs from *that* water.
+Detecting litter with fixed color rules is difficult on water surfaces. The water itself can be saturated (blue, green, or brown) and changes appearance due to sky reflections, ripples, and lighting conditions.
 
-### 2.6.1. Water segmentation (`src/water.py`)
+The pipeline therefore works in two stages:
 
-Water is segmented either from a manually drawn polygon or automatically with GrabCut. In automatic mode, the central region is assumed to be water and the image corners that differ most in color from the center are used as background seeds. The raw result is cleaned with morphological closing and by keeping the largest connected component.
+1. Identify the region occupied by water.
+2. Detect objects that differ from the expected appearance of that water.
+
+This allows the detector to evaluate litter relative to its local environment instead of relying exclusively on fixed color thresholds.
+
+#### 2.6.1. Water segmentation (`src/water.py`)
+
+Water is segmented either from a manually drawn polygon or automatically using GrabCut.
+
+**Manual polygon segmentation**
+
+A polygon defines the valid aquatic region. Pixels inside the polygon are considered part of the water region, while pixels outside it are excluded.
+
+This approach provides direct control over the segmentation and is particularly useful for difficult scenes.
+
+**Automatic segmentation with GrabCut**
+
+In automatic mode, the central region is assumed to contain water. Image corners that differ most in color from the center are used as background seeds.
+
+The initial GrabCut result is subsequently cleaned using morphological closing and connected-component analysis, retaining the largest connected region.
 
 ![Water segmentation: overlay, initial GrabCut labels, raw GrabCut result and final water mask](docs/images/water_segmentation_GOPR1767.jpg)
 
 *Panels: (1) water overlay, (2) initial GrabCut labels, (3) raw GrabCut result, (4) final water mask. The ball and the white object appear as black holes inside the water mask, which is a useful litter cue.*
 
-The automatic segmentation is a heuristic and must be inspected visually. For difficult scenes, pass a manual polygon through `WATER_POLYGONS` in `run_batch.py`.
+The automatic segmentation is heuristic and must be inspected visually. For difficult scenes, manual polygons can be supplied through `WATER_POLYGONS` in `run_batch.py`.
 
-### 2.6.2. Litter as deviation from the local water color (`method="anomaly"`)
+#### 2.6.2. Litter as deviation from the local water color (`method="anomaly"`)
 
-Inside the water region, `detect_boxes` estimates the expected water color locally (normalized Gaussian blur over water pixels only) and measures how far each pixel is from it in LAB space. Litter is whatever deviates from that estimate, plus the holes in the water mask.
+Inside the water region, `detect_boxes` estimates the expected water color locally using normalized Gaussian blur over valid water pixels only.
+
+The algorithm then measures how far each pixel deviates from this estimated background in LAB color space.
+
+Regions that differ significantly from their surrounding water become potential litter candidates. Holes in the water mask are also considered potential objects.
 
 ![Distance map: how far each pixel is from the local water color](docs/images/anomaly_dist_map_GOPR1767.jpg)
 
@@ -183,47 +213,59 @@ Inside the water region, `detect_boxes` estimates the expected water color local
 
 Additional safeguards:
 
-- **Iterative background estimate:** anomalous pixels are excluded and the background is recomputed, so litter does not contaminate its own background.
+- **Iterative background estimate:** anomalous pixels are excluded and the background is recomputed, preventing litter from contaminating its own background estimate.
 - **Robust threshold:** median + k·MAD of the distances over the water (`anomaly_k`, with a floor of `anomaly_min_dist`).
 - **Shadow handling:** pixels darker than the water weigh less, and very dark bands (shade over the water) are ignored.
 - **Edge margin:** anomalies near the water boundary (dock shadows, ripples) are discarded; holes are always kept.
-- **Shape filtering:** area, aspect ratio (including the rotated bounding rectangle, which rejects thin slanted strips), extent and solidity.
-- **Splitting touching objects:** non-convex blobs are separated with a distance-transform watershed.
+- **Shape filtering:** area, aspect ratio (including the rotated bounding rectangle, which rejects thin slanted strips), extent, and solidity.
+- **Splitting touching objects:** non-convex blobs are separated using a distance-transform watershed.
 
-The original absolute-color method remains available with `detect_boxes(img, method="color")` for comparison.
+The original absolute-color method remains available through:
+
+```python
+detect_boxes(img, method="color")
+```
+
+The anomaly-based method can be selected through:
+
+```python
+detect_boxes(img, method="anomaly")
+```
 
 ![Detection dashboard: final detections, valid region, water anomaly, holes, grouped candidates and shape analysis](docs/images/litter_detection_GOPR1767.jpg)
 
 *Diagnostic dashboard: (1) final detections, (2) valid water region, (3) water anomaly mask, (4) holes in the water mask, (5) grouped candidates, (6) contour and shape analysis.*
 
-**Known limitations:** touching objects can still be reported as a single box (the litter cluster in the example), small ripples and leaves can produce small false positives, and litter touching the water edge is hard to detect because segmentation leaves it outside the water.
+**Known limitations:** touching objects can still be reported as a single box (the litter cluster in the example), small ripples and leaves can produce small false positives, and litter touching the water edge is difficult to detect because segmentation may leave it outside the water region.
 
 ---
 
 ## 3. Project Architecture
 
-The project is organized into independent modules, separating image loading, detection, evaluation, visualization, and batch execution.
+The project is organized into independent modules, separating image loading, water segmentation, detection, evaluation, visualization, and batch execution.
 
 ```text
 floating-litter-detector/
 │
 ├── src/
 │   ├── dataset.py       # Image and YOLO-label loading
-│   ├── detect.py        # Detection pipeline
+│   ├── water.py         # Water-region segmentation and mask processing
+│   ├── detect.py        # Color-based and anomaly detection pipelines
 │   ├── evaluate.py      # IoU and detection evaluation
 │   └── visualize.py     # Ground-truth and detection visualization
-│
-├── scripts/
-│   └── run_batch.py     # Batch evaluation entry point
 │
 ├── data/
 │   └── raw/
 │       ├── images/      # Dataset images
 │       └── labels/      # YOLO-format annotations
 │
+├── docs/
+│   └── images/          # Documentation and diagnostic images
+│
 ├── results/
 │   └── batch/           # Generated evaluation images
 │
+├── run_batch.py         # Batch evaluation entry point
 ├── .gitignore
 ├── requirements.txt
 └── README.md
@@ -231,20 +273,21 @@ floating-litter-detector/
 
 ### Module responsibilities
 
-| Module                 | Status | Responsibility                                                                                                                            |
-| ---------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/dataset.py`       | Ready  | Loads images and YOLO-format annotations. Validated against the dataset to ensure ground-truth boxes align with the corresponding litter. |
-| `src/detect.py`        | Ready  | Implements HSV segmentation, morphology, contour extraction, geometric filtering, and bounding-box merging.                               |
-| `src/evaluate.py`      | Ready  | Loads YOLO annotations, calculates IoU, matches predictions, and produces TP/FP/FN counts.                                                |
-| `src/visualize.py`     | Ready  | Draws ground-truth boxes in green and predicted boxes in red.                                                                             |
-| `scripts/run_batch.py` | Ready  | Coordinates the complete batch evaluation process and generates output images and metrics.                                                |
+| Module | Status | Responsibility |
+|---|---|---|
+| `src/dataset.py` | Ready | Loads images and YOLO-format annotations. Validated against the dataset to ensure ground-truth boxes align with the corresponding litter. |
+| `src/water.py` | Ready | Implements manual polygon segmentation, automatic GrabCut segmentation, mask cleaning, and water-region visualization. |
+| `src/detect.py` | Ready | Implements HSV color detection, LAB anomaly detection, local background estimation, geometric filtering, candidate grouping, and watershed-based object separation. |
+| `src/evaluate.py` | Ready | Loads YOLO annotations, calculates IoU, matches predictions, and produces TP/FP/FN counts. |
+| `src/visualize.py` | Ready | Draws ground-truth boxes in green and predicted boxes in red. |
+| `run_batch.py` | Ready | Coordinates water segmentation, detection, batch evaluation, and generation of diagnostic outputs. |
 
 ### Detection interface
 
 The main detection function is:
 
 ```python
-detect_boxes(img)
+detect_boxes(img, method="anomaly")
 ```
 
 It receives an image and returns a list of bounding boxes:
@@ -256,6 +299,11 @@ It receives an image and returns a list of bounding boxes:
 ]
 ```
 
+The `method` argument selects the detection approach:
+
+- `"anomaly"`: water-relative anomaly detection.
+- `"color"`: original HSV-based detection.
+
 Detection thresholds are exposed as function arguments, allowing parameter tuning without modifying the underlying processing pipeline.
 
 ### Execution flow
@@ -264,27 +312,33 @@ Detection thresholds are exposed as function arguments, allowing parameter tunin
 data/raw/images/*.jpg
           |
           v
-     run_batch.py
+      run_batch.py
           |
           v
-      detect.py
+       water.py
           |
           v
-    detect_boxes()
+   Water segmentation
           |
           v
-  Predicted bounding boxes
+       detect.py
+          |
+          v
+     detect_boxes()
+          |
+          v
+ Predicted bounding boxes
           |
           +----------------------+
           |                      |
           v                      v
-    evaluate.py             visualize.py
+     evaluate.py            visualize.py
           |                      |
           v                      v
-   TP / FP / FN          Comparison images
+     TP / FP / FN         Comparison images
           |                      |
           v                      v
- Precision / Recall       results/batch/
+ Precision / Recall        results/batch/
 ```
 
 The ground-truth annotations are loaded independently from:
@@ -309,7 +363,7 @@ The `run_batch.py` script orchestrates the complete workflow, while the individu
 ### 4.1. Clone the repository
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/caueSordi/floating-litter-detector.git
 cd floating-litter-detector
 ```
 
@@ -342,7 +396,7 @@ pip install -r requirements.txt
 
 Download the dataset from Zenodo:
 
-[https://zenodo.org/records/23674523](https://zenodo.org/records/23674523)
+[Amsterdam Dataset for Floating Litter Detection v2.0](https://zenodo.org/records/23674523)
 
 Extract the images and annotations into the following directories:
 
@@ -366,19 +420,20 @@ Image and annotation filenames must correspond.
 From the project root:
 
 ```bash
-python scripts/run_batch.py
+python run_batch.py
 ```
 
 The script:
 
 1. Iterates through the images in `data/raw/images/`.
 2. Resizes each image to 1280 pixels in width.
-3. Executes the detection pipeline.
-4. Loads the corresponding YOLO annotations.
-5. Matches predictions against ground truth using IoU.
-6. Calculates TP, FP, and FN.
-7. Saves comparison images in `results/batch/`.
-8. Prints per-image and aggregated evaluation metrics.
+3. Executes the water segmentation pipeline.
+4. Executes the selected detection pipeline.
+5. Loads the corresponding YOLO annotations.
+6. Matches predictions against ground truth using IoU.
+7. Calculates TP, FP, and FN.
+8. Saves comparison and diagnostic images in `results/batch/`.
+9. Prints per-image and aggregated evaluation metrics.
 
 ---
 
@@ -386,25 +441,25 @@ The script:
 
 **Status: Baseline under evaluation.**
 
-The implementation is complete, and the batch evaluation pipeline is ready to run.
+The implementation and batch evaluation pipeline are ready to run.
 
 The initial evaluation uses all 92 images from the dataset. Final precision and recall values will be added after the complete evaluation has been executed.
 
-| Metric                   | Result    |
-| ------------------------ | --------- |
-| Dataset images           | 92        |
-| Ground-truth annotations | 1,071     |
-| Detection threshold      | IoU ≥ 0.5 |
-| Precision                | Pending   |
-| Recall                   | Pending   |
-| True Positives           | Pending   |
-| False Positives          | Pending   |
-| False Negatives          | Pending   |
+| Metric | Result |
+|---|---|
+| Dataset images | 92 |
+| Ground-truth annotations | 1,071 |
+| Detection threshold | IoU ≥ 0.5 |
+| Precision | Pending |
+| Recall | Pending |
+| True Positives | Pending |
+| False Positives | Pending |
+| False Negatives | Pending |
 
 Results are reproducible by running:
 
 ```bash
-python scripts/run_batch.py
+python run_batch.py
 ```
 
 Visual inspection is also performed using generated comparison images:
@@ -424,9 +479,9 @@ These are not hidden implementation details; they represent the main challenges 
 
 **Problem:** Bright reflections from buildings, trees, and the sky can satisfy the same HSV thresholds used to identify pale litter.
 
-Since the detector relies primarily on brightness and saturation, these regions can generate false positives.
+Since the original color-based detector relies primarily on brightness and saturation, these regions can generate false positives.
 
-In some cases, a single reflection produces several disconnected detections, resulting in multiple bounding boxes around what is actually one environmental structure.
+The anomaly-based approach attempts to reduce this problem by estimating the local water appearance, but reflections and irregular lighting can still produce anomalous regions.
 
 **Current impact:**
 
@@ -439,9 +494,7 @@ In some cases, a single reflection produces several disconnected detections, res
 
 **Problem:** A single piece of litter can produce multiple contours due to reflections, irregular surfaces, dark folds, and discontinuities in the binary mask.
 
-The current containment-based merging strategy only handles boxes that are completely contained within another box.
-
-Partially overlapping or disconnected detections can therefore survive the merging stage.
+The current grouping strategy does not always merge partially overlapping or disconnected detections.
 
 **Current impact:**
 
@@ -453,7 +506,7 @@ Partially overlapping or disconnected detections can therefore survive the mergi
 
 **Problem:** The algorithm does not understand the semantic identity of detected objects.
 
-Foam, animals, vegetation, dock structures, and other pale objects may satisfy the segmentation and geometric filters.
+Foam, animals, vegetation, and other objects may satisfy the segmentation and geometric filters.
 
 Since the system has no explicit object classification mechanism, these regions can be incorrectly reported as litter.
 
@@ -461,7 +514,7 @@ Since the system has no explicit object classification mechanism, these regions 
 
 **Problem:** Large reflections from buildings, trees, and other structures may cover considerable portions of the water surface.
 
-The current maximum-area filter rejects some excessively large contours, but it does not identify the actual environmental source of a reflection.
+The maximum-area filter rejects some excessively large contours, but it does not identify the actual environmental source of a reflection.
 
 Smaller fragments inside these reflection regions can still pass the detection filters and generate bounding boxes.
 
@@ -471,13 +524,11 @@ Smaller fragments inside these reflection regions can still pass the detection f
 - Multiple detections caused by a single environmental structure.
 - Unreliable object counts.
 
-A more robust approach will require identifying and suppressing these regions before individual litter candidates are evaluated.
+A more robust approach will require identifying and suppressing unreliable regions before individual litter candidates are evaluated.
 
 ### 6.5. Litter with water-like colors is missed
 
-**Problem:** Litter whose color is similar to the surrounding water may fail the HSV thresholds.
-
-Since these pixels never enter the binary mask, subsequent contour analysis cannot recover them.
+**Problem:** Litter whose appearance is similar to the surrounding water may not produce sufficient color deviation to pass the anomaly threshold.
 
 This represents a systematic false-negative problem.
 
@@ -501,7 +552,7 @@ The minimum-area filter and morphological operations can remove such small regio
 
 Future development will focus on improving detection reliability while maintaining an interpretable classical computer-vision approach.
 
-The roadmap is organized around the limitations observed in the current baseline.
+The roadmap is organized around the limitations observed in the current implementation.
 
 ### Phase 1 — Evaluation and reproducibility
 
@@ -515,6 +566,7 @@ Planned improvements:
 - [ ] Record baseline precision and recall.
 - [ ] Export per-image TP, FP, FN, precision, and recall to CSV or JSON.
 - [ ] Add a mean absolute error (MAE) metric for object counting.
+- [ ] Compare the original HSV method against the anomaly-based method.
 
 The validation split is particularly important because repeatedly tuning parameters against all 92 images could produce misleading results.
 
@@ -641,16 +693,16 @@ Dataset source:
 
 Dataset characteristics:
 
-| Property                 | Description                              |
-| ------------------------ | ---------------------------------------- |
-| Dataset                  | Amsterdam Floating Litter Detection v2.0 |
-| Source                   | TU Delft / Jia et al.                    |
-| Images                   | 92                                       |
-| Annotated bounding boxes | 1,071                                    |
-| Classes                  | 1                                        |
-| Target class             | Litter                                   |
-| Annotation format        | YOLO                                     |
-| Environment              | Amsterdam canals                         |
+| Property | Description |
+|---|---|
+| Dataset | Amsterdam Floating Litter Detection v2.0 |
+| Source | TU Delft / Jia et al. |
+| Images | 92 |
+| Annotated bounding boxes | 1,071 |
+| Classes | 1 |
+| Target class | Litter |
+| Annotation format | YOLO |
+| Environment | Amsterdam canals |
 
 The dataset provides images of floating litter in real aquatic environments, together with bounding-box annotations.
 
@@ -692,7 +744,7 @@ The intention is to understand the problem, establish measurable improvements, a
 
 ## 10. Acknowledgements and Development Notes
 
-Note: This project used AI assistance (Muse) for documentation and idea and structure development. The code was written from scratch for this project, using the public OpenCV AP
+This project used AI assistance (Muse) for documentation, brainstorming, and structural development.
 
 The implementation was written from scratch for this project using Python and the public OpenCV API.
 
@@ -709,4 +761,3 @@ A license will be selected before public distribution.
 Dataset licensing and attribution requirements remain subject to the original Zenodo record and associated publication.
 
 ---
-
