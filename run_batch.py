@@ -156,6 +156,19 @@ for img_path in images:
             debug[mask_name]
         )
 
+    # Water-relative distance map (anomaly method only)
+    if debug.get("dist_map") is not None:
+
+        dist_vis = cv2.applyColorMap(
+            cv2.convertScaleAbs(debug["dist_map"], alpha=4.0),
+            cv2.COLORMAP_JET
+        )
+
+        cv2.imwrite(
+            str(OUT_DIR / f"{img_path.stem}_dist_map.jpg"),
+            dist_vis
+        )
+
     print(
         f"{img_path.stem}: "
         f"GT={len(gt)} "
