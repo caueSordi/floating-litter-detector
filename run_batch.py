@@ -14,6 +14,11 @@ from src.detect import (
     create_debug_view
 )
 
+from src.water import (
+    segment_water,
+    create_water_debug_view
+)
+
 from src.evaluate import load_yolo_boxes, match
 from src.visualize import draw_check
 
@@ -30,8 +35,8 @@ WIDTH = 1280
 # Optional water polygons for individual images.
 #
 # Coordinates refer to the resized 1280 px image.
-# Leave an image out of this dictionary to process
-# the entire frame.
+# Images NOT listed here use automatic (GrabCut)
+# water segmentation.
 #
 # Example:
 #
@@ -80,10 +85,22 @@ for img_path in images:
         img_path.stem
     )
 
-    # Run detector with diagnostic information
+    # Water segmentation: manual polygon if provided,
+    # otherwise automatic (GrabCut)
+    water_mask, water_dbg = segment_water(
+        img,
+        polygon=water_polygon
+    )
+
+    cv2.imwrite(
+        str(OUT_DIR / f"{img_path.stem}_water_debug.jpg"),
+        create_water_debug_view(img, water_mask, water_dbg)
+    )
+
+    # Run detector restricted to the water region
     det, debug = detect_boxes(
         img,
-        water_polygon=water_polygon,
+        water_mask=water_mask,
         return_debug=True
     )
 
@@ -126,6 +143,7 @@ for img_path in images:
         "white_mask",
         "color_mask",
         "valid_mask",
+        "holes_mask",
         "candidate_mask",
         "grouped_mask"
     ]:

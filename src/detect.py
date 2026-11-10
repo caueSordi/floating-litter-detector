@@ -2,6 +2,8 @@
 import cv2
 import numpy as np
 
+from src.water import segment_water
+
 
 # ==========================================================
 # 1. COLOR SEGMENTATION
@@ -86,43 +88,76 @@ def create_candidate_mask(
 # 2. WATER / VALID REGION MASK
 # ==========================================================
 
-def create_valid_mask(img, water_polygon=None):
+def fill_small_holes(water_mask, max_hole_fraction=0.05):
+    """
+    Returns (region, holes).
+
+    region: water mask with small internal holes filled.
+    holes:  the internal holes. Litter often appears here, because
+            segmentation labels it "not water" and it ends up surrounded
+            by water. Holes larger than max_hole_fraction of the image
+            are ignored (probably land/structures).
+    """
+
+    h, w = water_mask.shape
+
+    contours, hierarchy = cv2.findContours(
+        water_mask,
+        cv2.RETR_CCOMP,
+        cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    region = water_mask.copy()
+    holes = np.zeros_like(water_mask)
+
+    if hierarchy is None:
+        return region, holes
+
+    for c, hier in zip(contours, hierarchy[0]):
+
+        is_hole = hier[3] != -1  # has a parent -> inner contour
+
+        if is_hole and cv2.contourArea(c) <= max_hole_fraction * h * w:
+            cv2.drawContours(region, [c], -1, 255, thickness=cv2.FILLED)
+            cv2.drawContours(holes, [c], -1, 255, thickness=cv2.FILLED)
+
+    return region, holes
+
+
+def create_valid_mask(img, water_polygon=None, water_mask=None):
     """
     Creates the region in which litter detection is allowed.
 
-    water_polygon:
-        Optional list of (x, y) points describing the
-        approximate water boundary.
+    Priority:
+        1. water_mask    (from segment_water): small holes are filled so
+                         litter floating inside the water stays valid.
+        2. water_polygon (manual, coordinates of the resized image).
+        3. None: the entire image is valid.
 
-        If None, the entire image is considered valid.
-
-    IMPORTANT:
-        Polygon coordinates must refer to the resized image.
+    Returns:
+        valid_mask, holes
+        (holes is all zeros unless water_mask is used)
     """
 
     height, width = img.shape[:2]
 
-    mask = np.zeros(
-        (height, width),
-        dtype=np.uint8
-    )
+    holes = np.zeros((height, width), dtype=np.uint8)
+
+    if water_mask is not None:
+        valid, holes = fill_small_holes(water_mask)
+        return valid, holes
+
+    mask = np.zeros((height, width), dtype=np.uint8)
 
     if water_polygon is None:
         mask[:] = 255
-        return mask
+        return mask, holes
 
-    points = np.array(
-        water_polygon,
-        dtype=np.int32
-    )
+    points = np.array(water_polygon, dtype=np.int32)
 
-    cv2.fillPoly(
-        mask,
-        [points],
-        255
-    )
+    cv2.fillPoly(mask, [points], 255)
 
-    return mask
+    return mask, holes
 
 
 # ==========================================================
@@ -277,10 +312,18 @@ def detect_boxes(
     min_solidity=0.20,
     group_size=5,
     water_polygon=None,
+    water_mask=None,
+    auto_water=False,
     return_debug=False
 ):
     """
     Multi-color floating litter detector.
+
+    Water region (where litter is allowed), by priority:
+        water_mask    -> binary mask from segment_water()
+        water_polygon -> manual polygon (resized-image coordinates)
+        auto_water    -> True computes segment_water(img) automatically
+        otherwise     -> entire image
 
     Returns:
         boxes
@@ -291,6 +334,9 @@ def detect_boxes(
 
     height, width = img.shape[:2]
     img_area = height * width
+
+    if water_mask is None and water_polygon is None and auto_water:
+        water_mask, _ = segment_water(img)
 
     # --------------------------------------------------
     # A. Color segmentation
@@ -310,9 +356,16 @@ def detect_boxes(
     # B. Restrict detection to valid region
     # --------------------------------------------------
 
-    valid_mask = create_valid_mask(
+    valid_mask, holes = create_valid_mask(
         img,
-        water_polygon
+        water_polygon=water_polygon,
+        water_mask=water_mask
+    )
+
+    # Holes in the water mask are litter candidates too
+    candidate_mask = cv2.bitwise_or(
+        candidate_mask,
+        holes
     )
 
     candidate_mask = cv2.bitwise_and(
@@ -407,6 +460,7 @@ def detect_boxes(
         "white_mask": white_mask,
         "color_mask": color_mask,
         "valid_mask": valid_mask,
+        "holes_mask": holes,
         "candidate_mask": candidate_mask,
         "clean_mask": clean_mask,
         "grouped_mask": grouped_mask,
